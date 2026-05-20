@@ -1,0 +1,72 @@
+# 주사위 굴리기 보드 프로모션 — Trino 스키마
+# AI는 SELECT 컬럼명을 여기서만 가져온다. 추측 금지.
+
+catalog: promotion
+schema: dice_board
+
+glossary:
+  참여자: participant
+  참여이력: participation_history
+  보드판: board_id
+  보드 위치: current_position    # 0-based, 0=시작칸
+  주사위 수: dice_remaining
+  주사위 굴리기: action_type='dice_roll'
+  스테이지: current_stage        # 1-based
+  스테이지 클리어: action_type='stage_clear'
+  활성/완주/이탈: status
+
+tables:
+  participant:
+    full_path: promotion.dice_board.participant
+    grain: 1 row per (promotion_id, user_id)   # 한 사용자가 한 프로모션에 한 번
+    pk: participant_id
+    columns:
+      participant_id:   { type: bigint,   null: false }
+      promotion_id:     { type: varchar,  null: false }
+      user_id:          { type: bigint,   null: false }
+      board_id:         { type: varchar,  null: false }
+      current_stage:    { type: integer,  null: false, note: "1-based" }
+      current_position: { type: integer,  null: false, note: "0-based" }
+      dice_remaining:   { type: integer,  null: false }
+      total_dice_used:  { type: integer,  null: false, note: "누적" }
+      total_rolls:      { type: integer,  null: false, note: "누적 dice_roll 횟수" }
+      status:           { type: varchar,  null: false, enum: [active, completed, dropped] }
+      joined_at:        { type: timestamp(3) with time zone, null: false }
+      updated_at:       { type: timestamp(3) with time zone, null: false }
+
+  participation_history:
+    full_path: promotion.dice_board.participation_history
+    grain: 1 row per action event   # append-only
+    pk: history_id
+    partition_key: event_date
+    columns:
+      history_id:     { type: bigint,  null: false }
+      participant_id: { type: bigint,  null: false, fk: participant.participant_id }
+      promotion_id:   { type: varchar, null: false }
+      action_type:    { type: varchar, null: false, enum: [join, dice_roll, dice_charged, stage_clear, reward_earned, completed, dropped] }
+      stage:          { type: integer, null: true }
+      dice_count:     { type: integer, null: true,  note: "dice_roll=사용량, dice_charged=충전량" }
+      from_position:  { type: integer, null: true,  note: "dice_roll에서만 채워짐" }
+      to_position:    { type: integer, null: true,  note: "dice_roll에서만 채워짐" }
+      reward_type:    { type: varchar, null: true,  enum: [point, coupon, item, dice_extra] }
+      reward_value:   { type: bigint,  null: true }
+      event_date:     { type: date,    null: false, note: "KST 기준, 파티션 키" }
+      created_at:     { type: timestamp(3) with time zone, null: false }
+
+# action_type 별 채워지는 컬럼
+action_type_columns:
+  join:          []
+  dice_roll:     [stage, dice_count, from_position, to_position]
+  dice_charged:  [stage, dice_count]
+  stage_clear:   [stage]                    # reward_* 부수효과 가능
+  reward_earned: [stage, reward_type, reward_value]
+  completed:     []                         # reward_* 부수효과 가능
+  dropped:       []
+
+# JOIN
+joins:
+  participant__history:
+    on: participant.participant_id = participation_history.participant_id
+    type: LEFT JOIN
+  forbidden:
+    - "promotion_id 로 JOIN 금지 (카테시안 폭발)"
