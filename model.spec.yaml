@@ -1,0 +1,85 @@
+# model.spec.yaml — model.yaml 의 닫힌 스펙 (메타 스키마)
+#
+# === 메타 규칙 (단 하나) ===
+# model.yaml 은 이 스펙에 정의된 키·필드·값만 사용한다.
+# 부족하면 임의로 만들지 말고, 먼저 이 스펙을 고친 뒤 model.yaml 에 반영한다.
+#
+# === 운영 원칙: 최소로 시작, 필요할 때 확장 ===
+# 각 객체는 [required] 필드만으로 유효하다.
+# [optional] 필드는 실제로 필요해질 때만 추가한다. 미리 채우지 않는다.
+
+# model.yaml 최상위에 올 수 있는 키 (이게 전부)
+top_level_keys:
+  - catalog
+  - schema
+  - glossary
+  - entities
+  - action_type_columns
+  - joins
+  - dimensions
+  - metrics
+  - segments
+  - autofilters
+
+# 객체별 필드. required 만으로 완성된다. optional 은 필요시 추가.
+objects:
+  entity:
+    required: [full_path, grain, pk, columns]
+    optional: [partition_key, description]
+  column:
+    required: [type, "null"]
+    optional: [enum, note, pii, fk]
+  dimension:
+    required: [name, entity, column, type]
+    optional: [values, buckets, note]
+  metric:
+    required: [name, entity, sql]
+    optional: [label, type, format, description, sliceable_by, apply_segment]
+  segment:
+    required: [name, entity, filter]
+    optional: [note]
+  autofilter:
+    required: [entity, filter]
+    optional: [reason, overridable]
+  join:
+    required: [on, type]
+    optional: []
+
+# 값이 닫힌 필드 (목록 밖의 값 금지)
+closed_values:
+  column.type:    [bigint, integer, varchar, date, double, boolean, "timestamp(3) with time zone"]
+  dimension.type: [categorical, ordinal, time, bucket]
+  metric.type:    [count, count_distinct, sum, avg, ratio]
+  metric.format:  [integer, decimal, percent]
+  join.type:      ["LEFT JOIN", "INNER JOIN"]
+  # boolean 필드(null, pii, overridable)는 true | false. pii 는 true 일 때만 표기.
+
+# 닫힌 값 중 해석이 필요한 것만 메모
+value_meanings:
+  metric.type:                       # 합산 가능 여부(additivity)가 핵심
+    count:          row 수. 슬라이스 합산 가능.
+    sum:            합. 슬라이스 합산 가능.
+    count_distinct: 고유값 수. 단순 합산 주의.
+    avg:            평균. 슬라이스 합산 불가.
+    ratio:          비율. 슬라이스 합산 불가 — 분자/분모로 재계산.
+  dimension.type:
+    categorical: 순서 없는 범주
+    ordinal:     순서 있는 범주
+    time:        시간축
+    bucket:      연속 숫자 컬럼을 buckets 로 구간화
+
+# 명명 규칙
+naming:
+  - 모든 이름은 snake_case 영문. 테이블명은 단수형.
+  - timestamp 컬럼은 항상 'timestamp(3) with time zone'.
+
+# model.yaml 수정 시 함께 갱신
+sync:
+  - action_type enum 변경 → model.yaml::action_type_columns
+  - 컬럼·enum·metric·segment 변경 → sample.md (예시 행/쿼리)
+
+# 스펙을 고쳐도 허용되지 않는 변경 (절대 금지)
+forbidden:
+  - 컬럼 삭제·이름변경·타입변경 (호환 불가 시 새 컬럼 추가, 구 컬럼 deprecated 마킹)
+  - 기존 enum 값·metric·segment 의 의미 변경 (새 항목 추가만 허용)
+  - entity 의 grain 변경
