@@ -11,7 +11,7 @@ AI가 자연어 질문 → SQL 을 만들 때 반드시 지킨다.
 ## 시맨틱 모델 사용 (재발명 금지)
 - 집계 수치는 `model.yaml::metrics` 의 `sql` 을 사용/응용. 메트릭 의미를 임의로 만들지 말 것.
 - "활성/완주/이탈/주사위 소진" 같은 필터는 `model.yaml::segments` 의 `filter` 를 사용.
-- group by / 필터 대상 컬럼은 `model.yaml::dimensions` 에 있는 것만.
+- GROUP BY 축으로 쓸 컬럼은 `model.yaml::dimensions` 에 있는 것만. (필터 전용 컬럼은 `entities` 에 선언돼 있으면 WHERE 에 바로 사용 가능)
 - metric 에 `apply_segment` 가 있으면 그 세그먼트 필터를 WHERE 에 반드시 포함.
 - 정의에 없는 metric/segment 가 필요하면 임의 생성하지 말고 사용자에게 정의를 확인한 뒤 `model.yaml` 에 등록.
 
