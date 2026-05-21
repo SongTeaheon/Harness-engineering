@@ -1,0 +1,242 @@
+# 주사위 굴리기 보드 프로모션 — 경량 시맨틱 모델
+# AI는 이 파일을 1순위 컨텍스트로 읽고 자연어 질문 → Trino SQL 을 생성한다.
+# 컬럼명·메트릭·세그먼트는 여기 정의된 것만 사용한다. 추측·재발명 금지.
+#
+# ============================================================
+# 편집 규칙 (사람이 이 파일을 수정·리뷰할 때 반드시 지킨다)
+# ============================================================
+#
+# [구성 섹션]  glossary / entities / joins / dimensions / metrics / segments / autofilters
+#
+# [필수 항목]
+#   - entity:    full_path, grain, pk
+#   - 컬럼:      type, null
+#   - enum 컬럼: enum 값 전체 나열
+#   - 모호한 단위: note 에 명시 (0-based / 1-based, 시간대, 누적/순간 등)
+#   - 파티션 entity: partition_key
+#   - 외래 참조: columns 의 fk 속성 (예: fk: participant.participant_id)
+#   - PII 컬럼:  pii: true (예: user_id)
+#   - dimension: entity, column, type(categorical|ordinal|time)
+#   - metric:    entity, sql, label
+#   - segment:   entity, filter
+#   - autofilter: entity, filter, overridable
+#   - 한국어 용어가 새로 생기면 glossary 에 매핑 추가
+#
+# [명명 규칙]
+#   - 테이블·컬럼·metric·segment 이름 모두 snake_case 영문
+#   - 테이블명은 단수형 (participant ✓, participants ✗)
+#   - timestamp 는 `timestamp(3) with time zone` 으로 통일
+#   - 정수 ID 는 bigint, 분류용 코드/식별자는 varchar
+#
+# [변경 금지]
+#   - 컬럼 삭제·이름 변경·타입 변경 금지 (호환 불가 시 새 컬럼 추가, 구 컬럼은 deprecated 마킹)
+#   - 기존 enum 값 / metric / segment 의 의미 변경 금지 (새 항목 추가는 OK)
+#   - entity 의 grain 변경 금지 (집계 결과가 전부 어긋남)
+#
+# [함께 갱신해야 하는 항목]
+#   - action_type 추가/삭제   → action_type_columns 동기화
+#   - 신규 컬럼·enum 값       → sample.md 에 예시 행 추가
+#   - metric/segment 변경     → sample.md 의 예시 쿼리 검토
+#
+# [커밋 전 자가 점검 체크리스트]
+#   [ ] 신규/변경 컬럼에 type, null, (필요시) enum, note, pii 가 있다
+#   [ ] 신규 entity 에 full_path, grain, pk 가 있다
+#   [ ] glossary 가 한국어 용어와 동기화되어 있다
+#   [ ] 모든 fk 가 실제 존재하는 PK 를 가리킨다
+#   [ ] 신규 metric/segment 가 정의된 dimension/entity 만 참조한다
+#   [ ] enum 변경이라면 action_type_columns / sample.md 도 같이 수정했다
+# ============================================================
+
+catalog: promotion
+schema: dice_board
+
+# --- 한국어 용어 → 영문 매핑 ---------------------------------
+glossary:
+  참여자: participant
+  참여이력: participation_history
+  보드판: board_id
+  보드 위치: current_position    # 0-based, 0=시작칸
+  주사위 수: dice_remaining
+  주사위 굴리기: action_type='dice_roll'
+  스테이지: current_stage        # 1-based
+  스테이지 클리어: action_type='stage_clear'
+  활성/완주/이탈: status
+
+# --- 엔티티 (물리 테이블) ------------------------------------
+entities:
+  participant:
+    full_path: promotion.dice_board.participant
+    grain: 1 row per (promotion_id, user_id)   # 한 사용자가 한 프로모션에 한 번
+    pk: participant_id
+    description: 참여자의 현재 상태 스냅샷. 액션이 누적될 때마다 UPDATE.
+    columns:
+      participant_id:   { type: bigint,   null: false }
+      promotion_id:     { type: varchar,  null: false }
+      user_id:          { type: bigint,   null: false, pii: true }
+      board_id:         { type: varchar,  null: false }
+      current_stage:    { type: integer,  null: false, note: "1-based" }
+      current_position: { type: integer,  null: false, note: "0-based" }
+      dice_remaining:   { type: integer,  null: false }
+      total_dice_used:  { type: integer,  null: false, note: "누적" }
+      total_rolls:      { type: integer,  null: false, note: "누적 dice_roll 횟수" }
+      status:           { type: varchar,  null: false, enum: [active, completed, dropped] }
+      joined_at:        { type: timestamp(3) with time zone, null: false }
+      updated_at:       { type: timestamp(3) with time zone, null: false }
+
+  participation_history:
+    full_path: promotion.dice_board.participation_history
+    grain: 1 row per action event   # append-only
+    pk: history_id
+    partition_key: event_date
+    description: 참여자가 수행한 모든 액션의 이벤트 로그. append-only.
+    columns:
+      history_id:     { type: bigint,  null: false }
+      participant_id: { type: bigint,  null: false, fk: participant.participant_id }
+      promotion_id:   { type: varchar, null: false }
+      action_type:    { type: varchar, null: false, enum: [join, dice_roll, dice_charged, stage_clear, reward_earned, completed, dropped] }
+      stage:          { type: integer, null: true }
+      dice_count:     { type: integer, null: true,  note: "dice_roll=사용량, dice_charged=충전량" }
+      from_position:  { type: integer, null: true,  note: "dice_roll에서만 채워짐" }
+      to_position:    { type: integer, null: true,  note: "dice_roll에서만 채워짐" }
+      reward_type:    { type: varchar, null: true,  enum: [point, coupon, item, dice_extra] }
+      reward_value:   { type: bigint,  null: true }
+      event_date:     { type: date,    null: false, note: "KST 기준, 파티션 키" }
+      created_at:     { type: timestamp(3) with time zone, null: false }
+
+# action_type 별 채워지는 컬럼
+action_type_columns:
+  join:          []
+  dice_roll:     [stage, dice_count, from_position, to_position]
+  dice_charged:  [stage, dice_count]
+  stage_clear:   [stage]                    # reward_* 부수효과 가능
+  reward_earned: [stage, reward_type, reward_value]
+  completed:     []                         # reward_* 부수효과 가능
+  dropped:       []
+
+# --- 조인 ----------------------------------------------------
+joins:
+  participant__history:
+    on: participant.participant_id = participation_history.participant_id
+    type: LEFT JOIN
+  forbidden:
+    - promotion_id 로 JOIN 금지 (카테시안 폭발)
+
+# --- 디멘션 (group by / filter 대상) -------------------------
+dimensions:
+  - name: status
+    entity: participant
+    column: status
+    type: categorical
+    values: [active, completed, dropped]
+  - name: board_id
+    entity: participant
+    column: board_id
+    type: categorical
+  - name: current_stage
+    entity: participant
+    column: current_stage
+    type: ordinal
+    note: 현재 도달 스테이지 (1-based)
+  - name: action_type
+    entity: participation_history
+    column: action_type
+    type: categorical
+    values: [join, dice_roll, dice_charged, stage_clear, reward_earned, completed, dropped]
+  - name: reward_type
+    entity: participation_history
+    column: reward_type
+    type: categorical
+    values: [point, coupon, item, dice_extra]
+  - name: event_date
+    entity: participation_history
+    column: event_date
+    type: time
+    grain: day
+    note: 일자 추이 집계의 기본 시간 축. KST 기준.
+
+# --- 메트릭 (집계 수치). AI는 여기 sql 을 사용/응용한다 ------
+metrics:
+  - name: total_participants
+    label: 총 참여자 수
+    entity: participant
+    sql: COUNT(DISTINCT user_id)
+    sliceable_by: [status, board_id, current_stage]
+  - name: active_participants
+    label: 활성 참여자 수
+    entity: participant
+    sql: COUNT(DISTINCT user_id) FILTER (WHERE status = 'active')
+    sliceable_by: [board_id, current_stage]
+  - name: completion_rate
+    label: 완주율
+    entity: participant
+    sql: CAST(COUNT_IF(status = 'completed') AS DOUBLE) / NULLIF(COUNT(*), 0)
+    sliceable_by: [board_id]
+  - name: dropout_rate
+    label: 이탈율
+    entity: participant
+    sql: CAST(COUNT_IF(status = 'dropped') AS DOUBLE) / NULLIF(COUNT(*), 0)
+    sliceable_by: [board_id]
+  - name: avg_reached_stage
+    label: 평균 도달 스테이지
+    entity: participant
+    sql: AVG(current_stage)
+    sliceable_by: [board_id, status]
+  - name: dice_rolls
+    label: 총 주사위 굴림 수
+    entity: participation_history
+    sql: COUNT(*)
+    apply_segment: dice_roll_events
+    sliceable_by: [event_date, stage]
+  - name: dice_consumed
+    label: 사용된 주사위 합
+    entity: participation_history
+    sql: SUM(dice_count)
+    apply_segment: dice_roll_events
+    sliceable_by: [event_date, stage]
+  - name: avg_rolls_per_user
+    label: 사용자당 평균 굴림 수
+    entity: participation_history
+    sql: CAST(COUNT_IF(action_type = 'dice_roll') AS DOUBLE) / NULLIF(COUNT(DISTINCT participant_id), 0)
+    sliceable_by: [event_date]
+  - name: stage_clear_count
+    label: 스테이지 클리어 건수
+    entity: participation_history
+    sql: COUNT(*)
+    apply_segment: stage_clear_events
+    sliceable_by: [event_date, stage]
+
+# --- 세그먼트 (이름 붙인 재사용 필터) ------------------------
+segments:
+  - name: active
+    entity: participant
+    filter: status = 'active'
+  - name: completed
+    entity: participant
+    filter: status = 'completed'
+  - name: dropped
+    entity: participant
+    filter: status = 'dropped'
+  - name: out_of_dice
+    entity: participant
+    filter: dice_remaining = 0
+    note: 주사위 소진 상태. 충전 유도 타겟.
+  - name: dice_roll_events
+    entity: participation_history
+    filter: action_type = 'dice_roll'
+  - name: stage_clear_events
+    entity: participation_history
+    filter: action_type = 'stage_clear'
+  - name: reward_events
+    entity: participation_history
+    filter: action_type = 'reward_earned'
+
+# --- 오토필터 (명시적으로 덮어쓰지 않는 한 항상 적용) --------
+autofilters:
+  - entity: participation_history
+    filter: event_date >= current_date - INTERVAL '30' DAY
+    reason: 파티션 프루닝. 질문에 기간이 없으면 최근 30일로 한정.
+    overridable: true   # 질문에 명시적 기간이 있으면 그 기간으로 대체
+  - entity: [participant, participation_history]
+    filter: promotion_id = :promotion_id
+    reason: 프로모션 스코프. 운영 프로모션이 1개면 'dice_2026_spring' 을 기본값으로.
+    overridable: true
