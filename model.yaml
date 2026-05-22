@@ -60,18 +60,56 @@ entities:
     grain: 1 row per (promotion_id, user_id)   # 한 사용자가 한 프로모션에 한 번
     pk: participant_id
     columns:
-      participant_id:   { type: bigint,   null: false }
-      promotion_id:     { type: varchar,  null: false }
-      user_id:          { type: bigint,   null: false, pii: true }
-      board_id:         { type: varchar,  null: false }
-      current_stage:    { type: integer,  null: false, note: "1-based" }
-      current_position: { type: integer,  null: false, note: "0-based" }
-      dice_remaining:   { type: integer,  null: false }
-      total_dice_used:  { type: integer,  null: false, note: "누적" }
-      total_rolls:      { type: integer,  null: false, note: "누적 dice_roll 횟수" }
-      status:           { type: varchar,  null: false, enum: [active, completed, dropped] }
-      joined_at:        { type: timestamp(3) with time zone, null: false }
-      updated_at:       { type: timestamp(3) with time zone, null: false }
+      participant_id:
+        type: bigint
+        null: false
+        description: 시스템 발급 참여 PK. 내부 식별용 — 사용자 노출 ID 아님.
+      promotion_id:
+        type: varchar
+        null: false
+        description: 소속 프로모션 식별자. 예 'dice_2026_spring'.
+      user_id:
+        type: bigint
+        null: false
+        pii: true
+        description: 실제 사용자 ID. 참여자 수 집계(COUNT DISTINCT)의 기준.
+      board_id:
+        type: varchar
+        null: false
+        description: 참여 중인 보드판. 보드마다 칸 수가 다를 수 있음.
+      current_stage:
+        type: integer
+        null: false
+        description: 현재 도달 스테이지. 1-based, 값이 클수록 멀리 진행.
+      current_position:
+        type: integer
+        null: false
+        description: 현재 보드 위치(칸). 0-based, 0=시작칸. board_id 별 최대값 상이.
+      dice_remaining:
+        type: integer
+        null: false
+        description: 현재 보유 주사위 수. 0이면 굴림 불가. dice_charged 로 증가, dice_roll 로 감소.
+      total_dice_used:
+        type: integer
+        null: false
+        description: 가입 이래 누적 사용 주사위 합 (순간값 아님).
+      total_rolls:
+        type: integer
+        null: false
+        description: 가입 이래 누적 굴림 횟수 (dice_roll 이벤트 수).
+      status:
+        type: varchar
+        null: false
+        enum: [active, completed, dropped]
+        description: 참여 상태. active=진행중, completed=완주, dropped=이탈.
+      joined_at:
+        type: timestamp(3) with time zone
+        null: false
+        description: 최초 참여 시각.
+      updated_at:
+        type: timestamp(3) with time zone
+        null: false
+        description: 마지막 상태 변경 시각. 액션이 누적될 때마다 갱신.
 
   participation_history:
     full_path: promotion.dice_board.participation_history
@@ -79,18 +117,60 @@ entities:
     pk: history_id
     partition_key: event_date
     columns:
-      history_id:     { type: bigint,  null: false }
-      participant_id: { type: bigint,  null: false, fk: participant.participant_id }
-      promotion_id:   { type: varchar, null: false }
-      action_type:    { type: varchar, null: false, enum: [join, dice_roll, dice_charged, stage_clear, reward_earned, completed, dropped] }
-      stage:          { type: integer, null: true }
-      dice_count:     { type: integer, null: true,  note: "dice_roll=사용량, dice_charged=충전량" }
-      from_position:  { type: integer, null: true,  note: "dice_roll에서만 채워짐" }
-      to_position:    { type: integer, null: true,  note: "dice_roll에서만 채워짐" }
-      reward_type:    { type: varchar, null: true,  enum: [point, coupon, item, dice_extra] }
-      reward_value:   { type: bigint,  null: true }
-      event_date:     { type: date,    null: false, note: "KST 기준, 파티션 키" }
-      created_at:     { type: timestamp(3) with time zone, null: false }
+      history_id:
+        type: bigint
+        null: false
+        description: 이벤트 PK.
+      participant_id:
+        type: bigint
+        null: false
+        fk: participant.participant_id
+        description: 액션을 수행한 참여자.
+      promotion_id:
+        type: varchar
+        null: false
+        description: 프로모션 ID. 단독 조회·파티션 편의로 중복 보유(denormalized).
+      action_type:
+        type: varchar
+        null: false
+        enum: [join, dice_roll, dice_charged, stage_clear, reward_earned, completed, dropped]
+        description: >
+          이 행의 액션 종류. join=참여, dice_roll=주사위 사용, dice_charged=주사위 충전,
+          stage_clear=스테이지 클리어, reward_earned=보상 획득, completed=완주, dropped=이탈.
+          값별로 채워지는 컬럼은 action_type_columns 참조.
+      stage:
+        type: integer
+        null: true
+        description: 액션 발생 시점의 스테이지. join/dropped 등에서는 NULL.
+      dice_count:
+        type: integer
+        null: true
+        description: dice_roll=사용 주사위 수, dice_charged=충전 주사위 수. 그 외 액션은 NULL.
+      from_position:
+        type: integer
+        null: true
+        description: 이동 전 보드 위치. dice_roll 에서만 채워짐.
+      to_position:
+        type: integer
+        null: true
+        description: 이동 후 보드 위치. dice_roll 에서만 채워짐.
+      reward_type:
+        type: varchar
+        null: true
+        enum: [point, coupon, item, dice_extra]
+        description: 보상 종류. point=포인트, coupon=쿠폰, item=아이템, dice_extra=추가 주사위. 보상 없으면 NULL.
+      reward_value:
+        type: bigint
+        null: true
+        description: 보상 수치. point 면 포인트 양, dice_extra 면 추가 주사위 개수. 보상 없으면 NULL.
+      event_date:
+        type: date
+        null: false
+        description: 이벤트 발생일(KST 기준). 파티션 키.
+      created_at:
+        type: timestamp(3) with time zone
+        null: false
+        description: 정확한 발생 시각. 정밀 시간 비교용.
 
 # action_type 별 채워지는 컬럼
 action_type_columns:

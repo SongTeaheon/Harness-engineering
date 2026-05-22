@@ -31,7 +31,7 @@ objects:
     optional: [partition_key, description]
   column:
     required: [type, "null"]
-    optional: [enum, note, pii, fk]
+    optional: [enum, description, pii, fk]
   dimension:
     required: [name, entity, column, type]
     optional: [values, buckets, note]
