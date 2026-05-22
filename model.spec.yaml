@@ -43,7 +43,7 @@ objects:
     optional: [reason, overridable]
   join:
     required: [on, type]
-    optional: []
+    optional: [cardinality]
 
 # 값이 닫힌 필드 (목록 밖의 값 금지)
 closed_values:
@@ -51,7 +51,8 @@ closed_values:
   dimension.type: [categorical, ordinal, time, bucket]
   metric.type:    [count, count_distinct, sum, avg, ratio]
   metric.format:  [integer, decimal, percent]
-  join.type:      ["LEFT JOIN", "INNER JOIN"]
+  join.type:        ["LEFT JOIN", "INNER JOIN"]
+  join.cardinality: [one_to_one, one_to_many, many_to_one, many_to_many]
   # boolean 필드(null, pii, overridable)는 true | false. pii 는 true 일 때만 표기.
 
 # 닫힌 값 중 해석이 필요한 것만 메모
@@ -67,6 +68,11 @@ value_meanings:
     ordinal:     순서 있는 범주
     time:        시간축
     bucket:      연속 숫자 컬럼을 buckets 로 구간화
+  join.cardinality:                  # 방향은 왼쪽_오른쪽 (join 이름 순서)
+    one_to_many:  "왼쪽 1, 오른쪽 N. JOIN 시 왼쪽 행이 불어남 → 왼쪽 수치 SUM 주의."
+    many_to_one:  "왼쪽 N, 오른쪽 1."
+    one_to_one:   "왼쪽 1, 오른쪽 1."
+    many_to_many: "N:N. 보통 중간 테이블 필요."
 
 # 명명 규칙
 naming:

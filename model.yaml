@@ -75,6 +75,7 @@ joins:
   participant__history:
     on: participant.participant_id = participation_history.participant_id
     type: LEFT JOIN
+    cardinality: one_to_many   # participant 1 : participation_history N
   forbidden:
     - promotion_id 로 JOIN 금지 (카테시안 폭발)
 
