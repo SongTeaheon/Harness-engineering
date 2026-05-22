@@ -31,7 +31,7 @@ objects:
     optional: [partition_key, description]
   column:
     required: [type, "null"]
-    optional: [enum, description, pii, fk]
+    optional: [enum, description]
   dimension:
     required: [name, entity, column, type]
     optional: [values, buckets, note]
@@ -56,7 +56,7 @@ closed_values:
   metric.format:  [integer, decimal, percent]
   join.type:        ["LEFT JOIN", "INNER JOIN"]
   join.cardinality: [one_to_one, one_to_many, many_to_one, many_to_many]
-  # boolean 필드(null, pii, overridable)는 true | false. pii 는 true 일 때만 표기.
+  # boolean 필드(null, overridable)는 true | false.
 
 # 닫힌 값 중 해석이 필요한 것만 메모
 value_meanings:

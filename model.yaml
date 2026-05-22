@@ -71,7 +71,6 @@ entities:
       user_id:
         type: bigint
         null: false
-        pii: true
         description: 실제 사용자 ID. 참여자 수 집계(COUNT DISTINCT)의 기준.
       board_id:
         type: varchar
@@ -124,8 +123,7 @@ entities:
       participant_id:
         type: bigint
         null: false
-        fk: participant.participant_id
-        description: 액션을 수행한 참여자.
+        description: 액션을 수행한 참여자. participant 와의 조인은 joins 참조.
       promotion_id:
         type: varchar
         null: false
