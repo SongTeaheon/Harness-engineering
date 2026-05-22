@@ -215,6 +215,11 @@ dimensions:
     column: reward_type
     type: categorical
     values: [point, coupon, item, dice_extra]
+  - name: stage
+    entity: participation_history
+    column: stage
+    type: ordinal
+    note: 액션 발생 시점의 스테이지 (1-based). participant.current_stage(현재 진행도)와 구분.
   - name: event_date
     entity: participation_history
     column: event_date
