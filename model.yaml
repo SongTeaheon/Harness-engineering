@@ -10,16 +10,48 @@ catalog: promotion
 schema: dice_board
 
 # --- 한국어 용어 → 영문 매핑 ---------------------------------
+# 모호하지 않은 용어는 term+maps_to 만. 모호하면 aliases/note 로 확장.
 glossary:
-  참여자: participant
-  참여이력: participation_history
-  보드판: board_id
-  보드 위치: current_position    # 0-based, 0=시작칸
-  주사위 수: dice_remaining
-  주사위 굴리기: action_type='dice_roll'
-  스테이지: current_stage        # 1-based
-  스테이지 클리어: action_type='stage_clear'
-  활성/완주/이탈: status
+  - term: 참여자
+    maps_to: participant
+
+  - term: 참여이력
+    aliases: [이력, 액션 로그]
+    maps_to: participation_history
+
+  - term: 보드판
+    aliases: [보드]
+    maps_to: board_id
+
+  - term: 보드 위치
+    aliases: [칸, 위치]
+    maps_to: current_position
+    note: 0-based, 0=시작칸.
+
+  - term: 주사위 수
+    aliases: [주사위 개수, 남은 주사위]
+    maps_to: dice_remaining
+    note: 현재 보유량. 사용 누계는 total_dice_used.
+
+  - term: 주사위 굴리기
+    aliases: [굴림, 주사위 던지기, 롤]
+    maps_to: "action_type = 'dice_roll'"
+
+  - term: 스테이지
+    aliases: [단계]
+    maps_to: current_stage
+    note: 1-based. 참여자의 현재 진행도면 participant.current_stage,
+          특정 액션 시점이면 participation_history.stage.
+
+  - term: 스테이지 클리어
+    aliases: [단계 통과, 단계 클리어]
+    maps_to: "action_type = 'stage_clear'"
+
+  - term: 상태
+    aliases: [활성, 완주, 완료, 이탈, 중단]
+    maps_to: status
+    note: 활성=active, 완주/완료=completed, 이탈/중단=dropped.
+          정확한 정의는 segments(active/completed/dropped) 참조.
 
 # --- 엔티티 (물리 테이블) ------------------------------------
 entities:

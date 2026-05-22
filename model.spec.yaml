@@ -23,6 +23,9 @@ top_level_keys:
 
 # 객체별 필드. required 만으로 완성된다. optional 은 필요시 추가.
 objects:
+  glossary_term:
+    required: [term, maps_to]
+    optional: [aliases, note]
   entity:
     required: [full_path, grain, pk, columns]
     optional: [partition_key, description]
