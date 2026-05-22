@@ -146,29 +146,37 @@ def 폴링루프():
             with lock:
                 if task.id in in_flight:
                     continue
-            ok = db_api.set_status(task.id, "in_progress")   # ① 찜 (동기)
+            branch_name = task.branch_name or f"symphony/{task.identifier}"
+            ok = db_api.set_status(task.id, "in_progress",
+                                   branch_name=branch_name)   # ① 찜 (동기)
             if not ok:
                 continue
             with lock:
-                in_flight.add(task.id)                        # ② 슬롯 점유
-            pool.submit(워커, task)                            # ③ 백그라운드 spawn
+                in_flight.add(task.id)                         # ② 슬롯 점유
+            pool.submit(워커, task, branch_name)                # ③ 백그라운드 spawn
         time.sleep(POLL_INTERVAL)
 
-def 워커(task):
+def 워커(task, branch_name):
     ws = None
     try:
-        ws = 워크스페이스준비(task)                            # A
+        ws = 워크스페이스준비(task, branch_name)               # A
         prompt = 프롬프트(task, TEMPLATE)
-        ok = 에이전트실행(ws, prompt)                          # B
-        db_api.set_status(task.id, "done" if ok else "failed")
+        ok, output = 에이전트실행(ws, prompt)                   # B (응답도 반환)
+        db_api.set_status(
+            task.id,
+            "done" if ok else "failed",
+            result=output,                                      # Claude 응답
+            branch_name=branch_name,                            # 작업 브랜치
+        )
     except Exception as e:
         log(task.id, "실패", e)
-        db_api.set_status(task.id, "failed")
+        db_api.set_status(task.id, "failed",
+                          result=str(e), branch_name=branch_name)
     finally:
         if ws:
             shutil.rmtree(ws, ignore_errors=True)
         with lock:
-            in_flight.discard(task.id)                         # ④ 슬롯 반납
+            in_flight.discard(task.id)                          # ④ 슬롯 반납
 ```
 
 ---
@@ -200,14 +208,13 @@ def 워크스페이스경로(root, identifier):
         raise ValueError(f"경로 탈출 시도: {path}")
     return path
 
-def 워크스페이스준비(task):
+def 워크스페이스준비(task, branch_name):
     ws = 워크스페이스경로(ROOT, task.identifier)
     os.makedirs(ws, exist_ok=True)
     subprocess.run(["git", "clone", "--depth", "1", REPO_URL, "."],
                    cwd=ws, check=True, timeout=120)
-    if task.branch_name:
-        subprocess.run(["git", "checkout", "-b", task.branch_name],
-                       cwd=ws, check=True)
+    subprocess.run(["git", "checkout", "-b", branch_name],
+                   cwd=ws, check=True)
     return ws
 ```
 
@@ -222,23 +229,34 @@ def 프롬프트(task, template):
         .replace("{{ issue.title }}", task.title)
         .replace("{{ issue.description }}", task.description or ""))
 
+MAX_OUTPUT_BYTES = 64 * 1024   # set_status 바디 비대화 방지용 상한
+
 def 에이전트실행(ws, prompt):
+    """(성공여부, 응답텍스트) 튜플 반환."""
     try:
-        result = subprocess.run(
+        proc = subprocess.run(
             ["claude", "-p", prompt,
              "--permission-mode", "acceptEdits"],   # 정확한 플래그는 claude --help 확인
             cwd=ws,                                  # 안전 불변식 1
             capture_output=True, text=True,
             timeout=1800,                            # 30분 (stall 대체)
         )
-        return result.returncode == 0
-    except subprocess.TimeoutExpired:
-        return False
+        output = (proc.stdout or "") + (proc.stderr or "")
+        if len(output) > MAX_OUTPUT_BYTES:
+            output = output[:MAX_OUTPUT_BYTES] + "\n...[truncated]"
+        return proc.returncode == 0, output
+    except subprocess.TimeoutExpired as e:
+        partial = (e.stdout or "") + (e.stderr or "") if hasattr(e, "stdout") else ""
+        return False, f"[TIMEOUT after {e.timeout}s]\n{partial}"
 ```
 
 > 정확한 CLI 플래그(`--permission-mode`, `--output-format`,
 > `--dangerously-skip-permissions` 등)는 사용하는 Claude Code 버전에서
 > `claude --help`로 확인한다. 핵심: `-p` 헤드리스 실행, 종료 코드로 성공 판정.
+>
+> **응답 형식 옵션**: `--output-format json`을 쓰면 stdout이 구조화된 JSON
+> (응답 텍스트 + 비용 + 세션ID 등)이 나온다. DB에 깔끔히 저장하려면 권장.
+> 텍스트면 그대로 저장, JSON이면 그대로 또는 파싱해 일부만 저장.
 
 ---
 
@@ -248,18 +266,36 @@ def 에이전트실행(ws, prompt):
 
 ```python
 # 어댑터가 제공해야 하는 인터페이스
-db_api.fetch(status="todo")        -> list[Issue]
-db_api.set_status(task_id, status) -> bool   # 성공 시 True
+db_api.fetch(status="todo") -> list[Issue]
+
+db_api.set_status(
+    task_id: str,
+    status: str,                       # "in_progress" | "done" | "failed"
+    *,
+    branch_name: str | None = None,    # 작업이 진행되는 git 브랜치
+    result: str | None = None,         # Claude가 뱉은 응답 (done/failed 시)
+) -> bool                              # 성공 시 True
 ```
+
+호출 시점별 페이로드:
+
+| 시점 | status | branch_name | result |
+|---|---|---|---|
+| 디스패치 직전 (찜) | `in_progress` | ✅ 포함 | (없음) |
+| 작업 성공 | `done` | ✅ 포함 | ✅ Claude stdout/stderr |
+| 작업 실패/타임아웃/예외 | `failed` | ✅ 포함 | ✅ 응답 또는 에러 메시지 |
 
 확정해야 할 내용:
 
 - [ ] 작업 조회 엔드포인트 (메서드, 경로, 쿼리 파라미터, 페이지네이션 유무)
 - [ ] 작업 조회 응답 JSON 형태 → `Issue`로 매핑할 필드
-- [ ] 상태 변경 엔드포인트 (메서드, 경로, 바디 형태)
+- [ ] 상태 변경 엔드포인트 (메서드, 경로, **바디 스키마 = status/branch_name/result 필드명**)
+- [ ] `result` 필드의 형태 (text 그대로 저장? JSON 구조화? 길이 상한?)
 - [ ] 인증 방식 (API 키 / 토큰 / 헤더)
 - [ ] 상태 값 이름 (`todo`/`in_progress`/`done`/`failed` 또는 다른 명칭)
-- [ ] 작업 → git 레포/브랜치 연결 방법 (`branch_name` 출처)
+- [ ] 작업 → git 레포 연결 방법 (`REPO_URL` 출처, 자격증명)
+- [ ] `branch_name`을 DB가 사전 할당하는지(`Issue.branch_name`으로 내려옴) 아니면
+      워커가 생성하는지 (생성 시 명명 규칙, 예: `symphony/<identifier>`)
 
 `Issue` 표준 구조 (MVP 최소 필드):
 
@@ -267,12 +303,20 @@ db_api.set_status(task_id, status) -> bool   # 성공 시 True
 @dataclass
 class Issue:
     id: str
-    identifier: str          # 사람이 읽는 키
+    identifier: str               # 사람이 읽는 키
     title: str
     description: str | None
     state: str
-    branch_name: str | None = None
+    branch_name: str | None = None   # DB가 미리 줄 수도, 워커가 생성할 수도
 ```
+
+### 브랜치명 정책
+
+- `task.branch_name`이 있으면 그걸 사용.
+- 없으면 워커가 `symphony/<sanitize(identifier)>` 형태로 생성.
+- 어느 쪽이든 **디스패치 시점에 확정해서** `in_progress` set_status 호출에
+  같이 보낸다 → DB가 처음부터 어느 브랜치에서 작업이 일어나는지 안다.
+- 워커는 그 이름으로 `git checkout -b` 후 에이전트 실행.
 
 > 주의: `Issue.state`는 설정의 `active_states`/`terminal_states`와 글자가
 > 맞아야 한다. 정규화 시 소문자 통일 권장.
@@ -288,6 +332,9 @@ class Issue:
 | D3 | 동시 실행 개수 N | 머신 사양에 맞춰 결정 (예: 3~5) |
 | D4 | 폴링 주기 | 기본 30초 — 작업 도착 빈도에 맞춰 조정 |
 | D5 | git 레포 URL / 인증 | clone 대상과 자격증명 전달 방법 |
+| D6 | `result` 저장 형태 | 텍스트 그대로 / `--output-format json` 구조화 / 핵심만 추출 |
+| D7 | `result` 길이 상한 | DB 컬럼 한도와 합의 (PLAN 기본값 64KB) |
+| D8 | 브랜치명 출처 | DB 사전할당 / 워커 생성 (명명 규칙) |
 
 ---
 
@@ -326,7 +373,8 @@ symphony/
 
 ## 11. 한 줄 요약
 
-**타이머가 todo를 폴링 → 빈 슬롯만큼 `in_progress`로 찜하고 워커 spawn →
-워커는 격리 폴더에서 `claude -p` 실행 → 종료 코드로 `done`/`failed` 기록.**
+**타이머가 todo를 폴링 → 빈 슬롯만큼 브랜치명 정하고 `in_progress`로 찜하고
+워커 spawn → 워커는 격리 폴더에서 그 브랜치 체크아웃 후 `claude -p` 실행 →
+종료 코드로 `done`/`failed`를 Claude 응답·브랜치명과 함께 기록.**
 원본의 상태머신·프로토콜 복잡도는 "DB 상태를 찜으로 활용" + "헤드리스 CLI"로
 대부분 증발한다.
