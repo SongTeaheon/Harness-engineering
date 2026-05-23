@@ -344,15 +344,80 @@ class Issue:
 symphony/
 ├── ANALYSIS.md          # 원본 분석 (작성 완료)
 ├── PLAN.md              # 본 문서
-├── config.yaml          # 설정 (DB API URL, 동시성, 폴링 주기, 레포 URL)
+├── install.sh           # 설치 스크립트 (작성 완료)
+├── requirements.txt     # Python 의존성 (작성 완료)
+├── .env.example         # 환경변수 템플릿 (작성 완료, 커밋됨)
+├── .env                 # 실제 비밀 값 (커밋 안 함, install.sh가 복사 생성)
+├── .gitignore           # .env, .venv 차단 (작성 완료)
+├── config.yaml          # 비밀 아닌 설정 (동시성, 폴링 주기 등)
 ├── workflow.md          # 에이전트 프롬프트 템플릿
 ├── main.py              # 진입점 + 폴링 루프
 ├── orchestrator.py      # 디스패치 / 동시성 / in_flight
 ├── db_adapter.py        # DB 조회·상태변경 API 클라이언트
 ├── worker.py            # 워크스페이스 준비 + 에이전트 실행
-├── models.py            # Issue 데이터클래스
-└── requirements.txt     # requests, pyyaml 등
+└── models.py            # Issue 데이터클래스
 ```
+
+### 9.1 설치 — `install.sh`
+
+```bash
+./symphony/install.sh
+```
+
+스크립트가 멱등하게 하는 일 (여러 번 실행해도 안전):
+
+1. **시스템 전제 검사** — `git`, `python3 >= 3.10` 존재 여부. 없으면 안내만.
+2. **Claude Code CLI** — 없으면 `npm install -g @anthropic-ai/claude-code`.
+   npm/Node.js 18+ 필요 (없으면 안내).
+3. **Python venv** — `symphony/.venv` 생성 + `requirements.txt` 설치.
+4. **`.env` 초기화** — `.env.example` → `.env` 복사 (기존 `.env`는 건드리지 않음).
+5. **다음 단계 안내** — `claude /login`, `.env` 편집, 실행 명령.
+
+### 9.2 환경변수 — `.env` 패턴
+
+비밀 값(DB 토큰, Jira 토큰, GitHub 토큰 등)은 `.env`에 둔다. 코드에 박지 않고
+셸 rc 도 안 건드린다.
+
+**커밋 정책**
+- `.env.example` — 커밋됨. 어떤 변수가 필요한지 알려주는 템플릿(빈 값).
+- `.env` — **절대 커밋 안 함** (`.gitignore`). 실제 값.
+
+**전파 경로** — 앱 시작 시 한 번만 로드하면 자동으로 흐른다:
+
+```
+.env
+  └─(python-dotenv가 main.py 시작 시 load_dotenv())
+       └─ 오케스트레이터 프로세스의 os.environ
+            └─(subprocess.run의 기본 동작 = 부모 env 상속)
+                 └─ claude -p 자식 프로세스
+                      └─ Claude skill 의 bash/curl 명령
+                           └─ $JIRA_API_TOKEN 등을 그대로 사용
+```
+
+`subprocess.run`은 `env=None`(기본값)일 때 부모 환경을 그대로 물려준다. 따라서
+`main.py` 첫 줄에서 `load_dotenv()`만 부르면 끝. Claude skill 안에서 curl 한 줄로
+Jira API 호출 가능.
+
+**`main.py` 진입부 예시**
+
+```python
+from dotenv import load_dotenv
+load_dotenv()                              # 가장 먼저
+# 이후 코드 어디서든 os.getenv("JIRA_API_TOKEN") 가능
+# subprocess.run([...], cwd=ws) 는 자동으로 이 env 상속
+```
+
+**`.env.example` 에 들어가는 항목** (실제 채움은 `.env`에)
+
+| 변수 | 용도 | 소비처 |
+|---|---|---|
+| `DB_API_BASE_URL`, `DB_API_TOKEN` | 작업 조회·상태변경 API | `db_adapter.py` |
+| `REPO_URL`, `GITHUB_TOKEN` | 워크스페이스 `git clone` | `worker.py` |
+| `JIRA_BASE_URL`, `JIRA_USER_EMAIL`, `JIRA_API_TOKEN` | Claude skill의 Jira 호출 | claude subprocess |
+| (추가) `SLACK_WEBHOOK_URL` 등 | 도메인별 Claude skill | claude subprocess |
+
+새 skill이 새 토큰을 요구하면 → `.env.example`에 항목 추가 + 팀에 공유.
+코드 수정 불필요 (환경변수 이름만 일치하면 됨).
 
 ---
 
