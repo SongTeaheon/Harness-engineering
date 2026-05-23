@@ -358,7 +358,7 @@ symphony/
 └── models.py            # Issue 데이터클래스
 ```
 
-### 9.1 설치 — `install.sh`
+### 9.1 설치 — `install.sh` (한 방)
 
 ```bash
 ./symphony/install.sh
@@ -366,12 +366,27 @@ symphony/
 
 스크립트가 멱등하게 하는 일 (여러 번 실행해도 안전):
 
-1. **시스템 전제 검사** — `git`, `python3 >= 3.10` 존재 여부. 없으면 안내만.
+1. **시스템 전제 검사** — `git`, `python3 >= 3.10`. 없으면 안내만.
 2. **Claude Code CLI** — 없으면 `npm install -g @anthropic-ai/claude-code`.
-   npm/Node.js 18+ 필요 (없으면 안내).
-3. **Python venv** — `symphony/.venv` 생성 + `requirements.txt` 설치.
-4. **`.env` 초기화** — `.env.example` → `.env` 복사 (기존 `.env`는 건드리지 않음).
-5. **다음 단계 안내** — `claude /login`, `.env` 편집, 실행 명령.
+   npm/Node.js 18+ 필요.
+3. **Python venv** — `symphony/.venv` + `requirements.txt` 설치.
+4. **템플릿 생성** (없는 경우만) — `.env` (← `.env.example`),
+   `config.yaml`, `workflow.md`, `run.sh` (실행 래퍼, `chmod +x`).
+5. **인터랙티브 마무리** (TTY 일 때만):
+   - "Claude 로그인 지금?" Y/n → 누르면 `claude /login` 실행.
+   - ".env 편집 지금?" Y/n → 누르면 `$EDITOR .env`.
+6. **완료 안내** — `./run.sh` 한 줄이면 실행.
+
+결과: 5단계 manual이 **사실상 0~2단계**로 줄어든다. 인터랙티브 프롬프트에 Y만
+누르면 0단계. 건너뛴 경우만 직접 처리.
+
+**한 번에 실행 흐름**
+```bash
+./symphony/install.sh   # 설치 + 템플릿 + (로그인) + (.env 편집)
+./symphony/run.sh       # 구현 완료 후 한 줄 실행
+```
+
+`run.sh`는 venv activate 가 필요 없다 — `.venv/bin/python`을 직접 사용.
 
 ### 9.2 환경변수 — `.env` 패턴
 

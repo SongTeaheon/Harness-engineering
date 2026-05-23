@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Symphony Python MVP — install script
+# Symphony Python MVP — install + setup script
 #
 # 멱등(idempotent): 여러 번 실행해도 안전.
-# OS 도구(python3/git/node)는 검사만, 언어 도구는 자동 설치.
+# 한 방으로: 시스템 검사 → claude CLI 설치 → venv → 템플릿 생성 → 로그인 트리거 → 안내.
 
 set -euo pipefail
 
@@ -17,10 +17,21 @@ c_green() { printf '\033[32m%s\033[0m' "$*"; }
 c_red()   { printf '\033[31m%s\033[0m' "$*"; }
 log()     { printf '%s %s\n' "$(c_blue '[install]')" "$*"; }
 ok()      { printf '  %s %s\n' "$(c_green '✓')" "$*"; }
+skip()    { printf '  %s %s\n' "$(c_blue '·')" "$*"; }
 fail()    { printf '%s %s\n' "$(c_red '[install]')" "$*" >&2; exit 1; }
 
+# stdin 이 TTY 일 때만 prompt. (CI/pipe 환경에서는 자동으로 건너뜀)
+prompt_yn() {
+  local msg="$1"; local ans
+  [ -t 0 ] || { skip "TTY 아님 — '$msg' 건너뜀"; return 1; }
+  printf '\n  %s [Y/n] ' "$msg"
+  read -r ans || return 1
+  ans=${ans:-y}
+  [[ "$ans" =~ ^[Yy]$ ]]
+}
+
 # ── 1. 시스템 전제 검사 ────────────────────────────────────────────
-log "1/4 시스템 전제 검사"
+log "1/6 시스템 전제 검사"
 
 command -v git >/dev/null \
   || fail "git 가 필요합니다. (macOS: brew install git / Debian: apt install git)"
@@ -38,7 +49,7 @@ fi
 ok "python3: $PYV"
 
 # ── 2. Claude Code CLI ────────────────────────────────────────────
-log "2/4 Claude Code CLI"
+log "2/6 Claude Code CLI"
 
 if command -v claude >/dev/null; then
   ok "claude: $(claude --version 2>/dev/null || echo 'installed')"
@@ -58,52 +69,121 @@ else
 fi
 
 # ── 3. Python venv + 의존성 ───────────────────────────────────────
-log "3/4 Python 가상환경"
+log "3/6 Python 가상환경"
 
 if [ ! -d "$VENV" ]; then
   python3 -m venv "$VENV"
   ok "venv 생성: $VENV"
 else
-  ok "venv 존재: $VENV"
+  skip "venv 존재: $VENV"
 fi
 
 "$VENV/bin/pip" install --quiet --upgrade pip
 "$VENV/bin/pip" install --quiet -r "$HERE/requirements.txt"
 PKG_COUNT=$("$VENV/bin/pip" list --format=freeze | wc -l | tr -d ' ')
-ok "Python 의존성 설치 완료 ($PKG_COUNT 패키지)"
+ok "Python 의존성 ($PKG_COUNT 패키지)"
 
-# ── 4. .env 초기화 ────────────────────────────────────────────────
-log "4/5 .env 초기화"
+# ── 4. 설정/프롬프트/실행 래퍼 템플릿 생성 ────────────────────────
+log "4/6 템플릿 파일"
 
+# .env
 if [ -f "$HERE/.env" ]; then
-  ok ".env 이미 존재 (덮어쓰지 않음)"
+  skip ".env 존재 (덮어쓰지 않음)"
 elif [ -f "$HERE/.env.example" ]; then
   cp "$HERE/.env.example" "$HERE/.env"
-  ok ".env.example → .env 복사 (실제 값으로 채우세요)"
-else
-  log "  .env.example 없음 — 건너뜀"
+  ok ".env.example → .env 복사"
 fi
 
-# ── 5. 최종 안내 ──────────────────────────────────────────────────
-log "5/5 완료"
+# config.yaml
+if [ -f "$HERE/config.yaml" ]; then
+  skip "config.yaml 존재 (덮어쓰지 않음)"
+else
+  cat > "$HERE/config.yaml" <<'YAML'
+# Symphony Python MVP — operational config
+# 비밀 값(토큰 등)은 .env 에 둔다.
+
+polling:
+  interval_seconds: 30          # 폴링 주기
+
+agent:
+  max_concurrent: 3             # 동시 실행 워커 수
+  timeout_seconds: 1800         # claude -p 타임아웃 (30분)
+
+workspace:
+  root: ./workspaces            # 작업 폴더 루트
+
+branch:
+  prefix: symphony/             # task.branch_name 없을 때 생성 규칙
+
+# DB API URL, 토큰, REPO_URL 등은 .env 에서 읽음.
+YAML
+  ok "config.yaml 생성"
+fi
+
+# workflow.md (에이전트 프롬프트 템플릿)
+if [ -f "$HERE/workflow.md" ]; then
+  skip "workflow.md 존재 (덮어쓰지 않음)"
+else
+  cat > "$HERE/workflow.md" <<'MD'
+You are working on task {{ issue.identifier }}.
+
+**Title**: {{ issue.title }}
+
+**Description**:
+{{ issue.description }}
+
+Complete the work on the current branch. When done, commit your changes
+with a clear message and stop.
+MD
+  ok "workflow.md 생성"
+fi
+
+# run.sh (실행 래퍼 — activate 불필요)
+if [ -f "$HERE/run.sh" ]; then
+  skip "run.sh 존재 (덮어쓰지 않음)"
+else
+  cat > "$HERE/run.sh" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ ! -f "$HERE/main.py" ]; then
+  echo "[run] symphony/main.py 가 아직 없습니다. 구현 필요 (PLAN.md §10)." >&2
+  exit 1
+fi
+cd "$HERE"
+exec ./.venv/bin/python main.py "$@"
+BASH
+  chmod +x "$HERE/run.sh"
+  ok "run.sh 생성 (실행 래퍼)"
+fi
+
+# ── 5. 인터랙티브 마무리 ──────────────────────────────────────────
+log "5/6 인터랙티브 마무리"
+
+# Claude Code 로그인 트리거
+if prompt_yn "Claude Code 로그인을 지금 시도할까요? (claude /login)"; then
+  if claude /login; then
+    ok "로그인 완료"
+  else
+    log "  로그인 실패/취소 — 나중에 수동으로: claude /login"
+  fi
+fi
+
+# .env 편집 트리거
+if prompt_yn ".env 를 ${EDITOR:-nano} 로 지금 열까요?"; then
+  "${EDITOR:-nano}" "$HERE/.env"
+  ok ".env 편집 완료"
+fi
+
+# ── 6. 완료 안내 ──────────────────────────────────────────────────
+log "6/6 완료"
 cat <<EOF
 
-설치 완료. 다음 단계:
+준비 완료. 다음 한 줄이면 실행:
+  ${HERE}/run.sh
 
-  1) Claude Code 로그인 (최초 1회):
-       claude /login
-
-  2) .env 에 실제 값 채우기 (DB_API_TOKEN, JIRA_API_TOKEN 등):
-       \$EDITOR ${HERE}/.env
-
-  3) 가상환경 활성화:
-       source ${VENV}/bin/activate
-
-  4) 설정 파일 작성 (참고: PLAN.md §9):
-       ${HERE}/config.yaml
-       ${HERE}/workflow.md
-
-  5) 실행:
-       python -m symphony.main
+남은 manual 항목 (있다면):
+  · claude /login          (위에서 건너뛰었다면)
+  · ${HERE}/.env 비밀 값  (위에서 건너뛰었다면)
 
 EOF
