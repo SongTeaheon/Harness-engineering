@@ -35,7 +35,7 @@ glossary:
 
   - term: 주사위 굴리기
     aliases: [굴림, 주사위 던지기, 롤]
-    maps_to: "action_type = 'dice_roll'"
+    maps_to: dice_roll_events
 
   - term: 스테이지
     aliases: [단계]
@@ -45,7 +45,7 @@ glossary:
 
   - term: 스테이지 클리어
     aliases: [단계 통과, 단계 클리어]
-    maps_to: "action_type = 'stage_clear'"
+    maps_to: stage_clear_events
 
   - term: 상태
     aliases: [활성, 완주, 완료, 이탈, 중단]
