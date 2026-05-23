@@ -218,6 +218,36 @@ def 워크스페이스준비(task, branch_name):
     return ws
 ```
 
+### B'. 프롬프트 전략 — 고정 + Jira 키 위임
+
+DB가 작업 내용(title/description)을 들고 있지 않는다. 대신 **Jira 키만 전달**하고
+에이전트가 Jira skill 로 직접 읽는다.
+
+`workflow.md` (고정 템플릿):
+```md
+Jira 티켓 {{ issue.identifier }} 를 보고, 거기 적힌 스펙에 맞도록
+개발하세요.
+
+규칙:
+- Jira skill 로 티켓 본문/코멘트/링크된 자료를 직접 읽으세요.
+- 작업은 현재 git 브랜치에서 진행합니다.
+- 완료되면 명확한 커밋 메시지로 커밋하고 종료하세요.
+```
+
+플레이스홀더는 **`{{ issue.identifier }}` 하나만** (Jira 키, 예: `MEGA-1234`).
+
+**전제**: Claude Code 에 Jira skill 이 설치·구성돼 있어야 한다.
+필요 환경변수: `JIRA_BASE_URL`, `JIRA_USER_EMAIL`, `JIRA_API_TOKEN` (이미 `.env`에 있음).
+
+**이 선택의 효과**
+| 항목 | 효과 |
+|---|---|
+| DB 모델 | 작업 내용 미러링 불필요 — `id` + `identifier` 만 핵심 |
+| 신선도 | 항상 최신 Jira 내용 (캐시 stale 없음) |
+| 새 정보 필드 추가 | 코드 수정 불필요 (Claude가 알아서 읽음) |
+| 의존성 | **Jira skill 필수** — 없으면 실패 |
+| 가용성 | Jira 다운 시 작업 블록 (DB 미러링이 없으므로 fallback 없음) |
+
 ### B. 에이전트 실행 (Claude Code 헤드리스)
 
 원본의 Codex app-server JSON 프로토콜을 전부 버리고, 헤드리스 CLI 한 방으로 대체.
@@ -288,27 +318,33 @@ db_api.set_status(
 확정해야 할 내용:
 
 - [ ] 작업 조회 엔드포인트 (메서드, 경로, 쿼리 파라미터, 페이지네이션 유무)
-- [ ] 작업 조회 응답 JSON 형태 → `Issue`로 매핑할 필드
+- [ ] 작업 조회 응답 JSON 형태 → **반드시** `id` + `identifier`(=Jira 키),
+      선택으로 `title`/`branch_name`
 - [ ] 상태 변경 엔드포인트 (메서드, 경로, **바디 스키마 = status/branch_name/result 필드명**)
 - [ ] `result` 필드의 형태 (text 그대로 저장? JSON 구조화? 길이 상한?)
 - [ ] 인증 방식 (API 키 / 토큰 / 헤더)
 - [ ] 상태 값 이름 (`todo`/`in_progress`/`done`/`failed` 또는 다른 명칭)
 - [ ] 작업 → git 레포 연결 방법 (`REPO_URL` 출처, 자격증명)
+- [ ] `identifier` 가 **Jira 키 그대로**인지 확인 (예: `MEGA-1234`).
+      Jira 키가 별도 필드면 그 이름.
 - [ ] `branch_name`을 DB가 사전 할당하는지(`Issue.branch_name`으로 내려옴) 아니면
       워커가 생성하는지 (생성 시 명명 규칙, 예: `symphony/<identifier>`)
+- [ ] **Claude Code 에 Jira skill 설치·구성 완료** — `JIRA_*` 환경변수 사용 가능
 
-`Issue` 표준 구조 (MVP 최소 필드):
+`Issue` 표준 구조 (Jira 위임 전략 기준 최소 필드):
 
 ```python
 @dataclass
 class Issue:
-    id: str
-    identifier: str               # 사람이 읽는 키
-    title: str
-    description: str | None
-    state: str
-    branch_name: str | None = None   # DB가 미리 줄 수도, 워커가 생성할 수도
+    id: str                         # DB primary key — set_status 호출용
+    identifier: str                 # Jira 키 (예: MEGA-1234) — 프롬프트로 들어감
+    state: str                      # 폴링 필터용 ("todo" 등)
+    branch_name: str | None = None  # DB 사전할당 or 워커가 생성
+    title: str | None = None        # 로깅용 (있으면 좋음, 필수 아님)
 ```
+
+**핵심**: 프롬프트가 Jira 키만 전달하므로 DB는 `title`/`description` 을 보낼
+의무가 없다. 있으면 로그 가독성이 좋아질 뿐. 어댑터는 둘 다 없어도 동작해야 함.
 
 ### 브랜치명 정책
 
@@ -454,7 +490,9 @@ load_dotenv()                              # 가장 먼저
 ## 11. 한 줄 요약
 
 **타이머가 todo를 폴링 → 빈 슬롯만큼 브랜치명 정하고 `in_progress`로 찜하고
-워커 spawn → 워커는 격리 폴더에서 그 브랜치 체크아웃 후 `claude -p` 실행 →
-종료 코드로 `done`/`failed`를 Claude 응답·브랜치명과 함께 기록.**
-원본의 상태머신·프로토콜 복잡도는 "DB 상태를 찜으로 활용" + "헤드리스 CLI"로
-대부분 증발한다.
+워커 spawn → 워커는 격리 폴더에서 그 브랜치 체크아웃 후 `claude -p "Jira <키>
+보고 개발해"` 실행 → Claude 가 Jira skill 로 스펙 직접 읽고 작업·커밋 → 종료
+코드로 `done`/`failed`를 Claude 응답·브랜치명과 함께 기록.**
+
+원본의 상태머신·프로토콜 복잡도는 "DB 상태를 찜으로 활용" + "헤드리스 CLI"로,
+DB 모델 복잡도는 "Jira 키만 전달, 내용은 Claude 가 직접" 으로 대부분 증발한다.

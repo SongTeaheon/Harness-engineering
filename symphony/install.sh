@@ -125,15 +125,15 @@ if [ -f "$HERE/workflow.md" ]; then
   skip "workflow.md 존재 (덮어쓰지 않음)"
 else
   cat > "$HERE/workflow.md" <<'MD'
-You are working on task {{ issue.identifier }}.
+Jira 티켓 {{ issue.identifier }} 를 보고, 거기 적힌 스펙에 맞도록
+개발하세요.
 
-**Title**: {{ issue.title }}
-
-**Description**:
-{{ issue.description }}
-
-Complete the work on the current branch. When done, commit your changes
-with a clear message and stop.
+규칙:
+- Jira skill 로 티켓 본문/코멘트/링크된 자료를 직접 읽으세요.
+- 작업은 현재 git 브랜치에서 진행합니다.
+- 완료되면 명확한 커밋 메시지로 커밋하고 종료하세요.
+- 스펙이 모호하면 작성자에게 묻지 말고 합리적으로 결정한 뒤 커밋
+  메시지에 결정 근거를 남기세요.
 MD
   ok "workflow.md 생성"
 fi
