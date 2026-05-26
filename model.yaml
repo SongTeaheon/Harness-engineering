@@ -224,7 +224,6 @@ dimensions:
     entity: participation_history
     column: event_date
     type: time
-    grain: day
     note: 일자 추이 집계의 기본 시간 축. KST 기준.
 
 # --- 메트릭 (집계 수치). AI는 여기 sql 을 사용/응용한다 ------
